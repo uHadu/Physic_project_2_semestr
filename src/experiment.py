@@ -70,6 +70,10 @@ class Series:
         return {"U_meas": _nan_to_none(self.U[i]), "I_meas": _nan_to_none(self.I[i])}
 
 
+def comma_g(x: float) -> str:
+    return f"{x:g}".replace(".", ",")
+
+
 def _nan_to_none(x: float) -> float | None:
     return None if x is None or not math.isfinite(x) else float(x)
 
@@ -127,21 +131,21 @@ def run_series(circuit: Circuit, emf_values, seed: int | None = None, noise: boo
         U_true[i], I_true[i] = v["U"], a["I"]
         if v["overload"] or a["overload"]:
             who = [n_ for n_, r in ((voltmeter, v), (ammeter, a)) if r["overload"]]
-            warn(f"Перегрузка прибора {', '.join(who)} при ℰ = {emf:g} В — точка не обрабатывается")
+            warn(f"Перегрузка прибора {', '.join(who)} при ℰ = {comma_g(emf)} В — точка не обрабатывается")
         else:
             U[i], I[i] = v["reading"], a["reading"]
             dU[i], dI[i] = v["error"], a["error"]
 
         burned[i] = any(l.burned for l in lamps)
         if burned[i] and not burned[:i].any():
-            warn(f"Лампа перегорела при ℰ = {emf:g} В (P > burn_factor·P_nom) — "
+            warn(f"Лампа перегорела при ℰ = {comma_g(emf)} В (P > burn_factor·P_nom) — "
                  "дальше ток через неё не идёт, эти точки не обрабатываются")
         for r in resistors:
             if r.name not in overheated and reports[r.name].get("overheated"):
                 overheated.add(r.name)
-                warn(f"{r.name}: мощность {abs(reports[r.name]['P']):.3g} Вт больше допустимой "
-                     f"P_max = {r.P_max:g} Вт уже при ℰ = {emf:g} В — реальный резистор нагреется "
-                     "(в модели ядра R от температуры не зависит)")
+                warn((f"{r.name}: мощность {abs(reports[r.name]['P']):.3g} Вт больше допустимой "
+                      f"P_max = {r.P_max:g} Вт уже при ℰ = {emf:g} В").replace(".", ",")
+                     + " — реальный резистор нагреется (в модели ядра R от температуры не зависит)")
 
     return Series(emf_values, U, I, dU, dI, U_true, I_true, burned, warnings, reports)
 
@@ -223,6 +227,10 @@ def main(argv=None) -> None:
     rows = run_experiment(emf_max=args.emf, n=args.n, R_A=args.R_A, R_V=args.R_V,
                           accuracy_class=args.gamma, seed=args.seed)
 
+    for row in rows:
+        for w in row["series"].warnings:
+            print(f"[схема {row['scheme']}, R = {row['R_set']:g} Ом] предупреждение: {w}")
+
     # таблица
     table = plots.results_table(rows)
     csv_path = os.path.join(args.out, "results_table.csv")
@@ -246,7 +254,9 @@ def main(argv=None) -> None:
     print("сохранено:", p)
 
     # ошибка метода δ(R)
-    R_grid = np.logspace(-1, 7, 81)
+    # до 300 кОм: выше в схеме Б начинает сказываться утечка G_MIN = 1e-12 См
+    # из каждого узла на землю в ядре (добавка −R·G_MIN к δ), см. docs/notes_for_partner.md
+    R_grid = np.logspace(-1, math.log10(3e5), 61)
     curves = {s: method_error_curve(R_grid, s, args.R_A, args.R_V) for s in ("A", "B")}
     fig = plots.plot_delta_vs_R(R_grid, curves, R_A=args.R_A, R_V=args.R_V, rows=rows)
     p = os.path.join(args.out, "delta_vs_R.png")

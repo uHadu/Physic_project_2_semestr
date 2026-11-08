@@ -65,11 +65,20 @@ def fmt_pm(value: float, err: float, unit: str = "Ом") -> str:
     return f"({comma(v, f'.{decimals}f')} ± {comma(e, f'.{decimals}f')}) {p}{unit}"
 
 
+def _sig(v: float, digits: int) -> str:
+    """digits значащих цифр без экспоненты: _sig(840, 2) → '840', _sig(0.0123, 2) → '0,012'."""
+    if v == 0:
+        return "0"
+    decimals = max(0, digits - 1 - int(math.floor(math.log10(abs(v)))))
+    s = comma(round(v, decimals), f".{decimals}f")
+    return s.rstrip("0").rstrip(",") if "," in s else s
+
+
 def fmt_value(value: float, unit: str, digits: int = 4) -> str:
     if value is None or not math.isfinite(value):
         return "—"
     factor, p = _prefix(value, unit)
-    return f"{comma(value / factor, f'.{digits}g')} {p}{unit}"
+    return f"{_sig(value / factor, digits)} {p}{unit}"
 
 
 def _axis_scale(values, unit: str) -> tuple[float, str]:
@@ -82,6 +91,16 @@ def _comma_ticks(ax) -> None:
     f = FuncFormatter(lambda v, _: comma(round(v, 10), "g"))
     ax.xaxis.set_major_formatter(f)
     ax.yaxis.set_major_formatter(f)
+
+
+def _log_label(v: float, _pos=None) -> str:
+    """Подписи лог. оси: 0,01 … 1000, а дальше 10⁴, 10⁵ … (без «1e+06»)."""
+    if v <= 0:
+        return ""
+    e = math.log10(v)
+    if abs(e - round(e)) < 1e-9 and abs(round(e)) >= 4:
+        return f"$10^{{{int(round(e))}}}$"
+    return comma(v, "g")
 
 
 def _style(ax) -> None:
@@ -246,7 +265,7 @@ def plot_delta_vs_R(R_grid, curves: dict, R_A: float, R_V: float, rows=None, ax=
                  f"R_V = {fmt_value(R_V, 'Ом', 3)}", fontsize=11, color=INK)
     ax.legend(fontsize=8, frameon=False, loc="lower center", ncol=2)
     _style(ax)
-    log_fmt = FuncFormatter(lambda v, _: comma(v, "g"))
+    log_fmt = FuncFormatter(_log_label)
     ax.xaxis.set_major_formatter(log_fmt)
     ax.yaxis.set_major_formatter(log_fmt)
     return fig
