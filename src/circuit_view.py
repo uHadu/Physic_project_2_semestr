@@ -15,9 +15,13 @@ circuit_view.py — отрисовка электрических схем дл�
                      внутренними сопротивлениями R_A и R_V (видно,
                      откуда берётся систематическая ошибка метода).
 
-Показания приборов выводятся прямо на схеме. Их можно передать
-из ядра (core.measure), а если не передать — посчитаются по
-формулам из README без случайного шума (функция ideal_readings).
+Показания приборов выводятся на схеме только при show_readings=True.
+Сами показания схема НЕ считает: их передают параметром readings —
+словарь {'U_meas': ..., 'I_meas': ...}, снятый с приборов ядра
+(solver.py / components.py). Получить его можно так:
+    experiment.readings_from_reports(sol.reports(noise=True))
+или функцией core_readings() ниже. Если readings не передан,
+на «дисплеях» стоит прочерк.
 
 Запуск:
     python circuit_view.py           — сохранить картинки в results/
@@ -39,28 +43,31 @@ LW = 2.0                  # толщина линий
 
 
 # ======================================================================
-#  Расчёт показаний (без шума) — формулы из раздела 3 README
+#  Показания приборов — из ядра (сама схема ничего не считает)
 # ======================================================================
-def ideal_readings(U_src, R, scheme="A", R_A=0.5, R_V=1e6):
-    """Возвращает словарь с токами/напряжениями в цепи (без шума).
+def core_readings(scheme="A", U_src=10.0, R=100.0, R_A=0.5, R_V=1e6,
+                  noise=False, seed=None, **params):
+    """Собрать схему А или Б на элементах ядра (presets.py), решить её
+    ядром и вернуть показания приборов {'U_meas': ..., 'I_meas': ...}.
+    None вместо числа — прибор перегружен."""
+    import presets
+    from experiment import measure_once
 
-    Ключи: I_meas (показание амперметра), U_meas (показание вольтметра),
-           I_R (ток через резистор), I_V (ток через вольтметр),
-           U_R (напряжение на резисторе), R_meas (= U_meas / I_meas).
-    """
-    if scheme == "A":
-        R_eq = R * R_V / (R + R_V)
-        I = U_src / (R_A + R_eq)
-        U_R = I * R_eq
-        res = dict(I_meas=I, U_meas=U_R, I_R=U_R / R, I_V=U_R / R_V, U_R=U_R)
-    elif scheme == "B":
-        I_R = U_src / (R + R_A)
-        res = dict(I_meas=I_R, U_meas=U_src, I_R=I_R, I_V=U_src / R_V,
-                   U_R=I_R * R)
-    else:
-        raise ValueError("scheme должна быть 'A' или 'B'")
-    res["R_meas"] = res["U_meas"] / res["I_meas"]
-    return res
+    circuit = presets.build(scheme, R=R, emf=U_src, R_A=R_A, R_V=R_V, **params)
+    readings, _warnings = measure_once(circuit, U_src, seed=seed, noise=noise)
+    return readings
+
+
+def _with_r_meas(readings):
+    """Копия показаний + R_meas = U_meas / I_meas (если оба есть)."""
+    rd = dict(readings or {})
+    U, I = rd.get("U_meas"), rd.get("I_meas")
+    rd["R_meas"] = U / I if U is not None and I else None
+    return rd
+
+
+def _reading_text(value, unit):
+    return "перегрузка" if value is None else fmt(value, unit)
 
 
 # ======================================================================
@@ -191,22 +198,23 @@ def dashed_box(ax, x, y, w, h, label, color, below=False):
 # ======================================================================
 def draw_circuit(ax, scheme="A", U_src=10.0, R=100.0, R_A=0.5, R_V=1e6,
                  readings=None, equivalent=False, show_formula=False,
-                 title=True, show_readings=False):
+                 title=True, show_readings=False, load_label=None):
     """Рисует схему А или Б на осях ax.
 
     show_readings — показывать «дисплеи» приборов (I, U) и подписи R_A, R_V.
                     По умолчанию выключено: на схеме ключ разомкнут.
 
-    readings — словарь {'U_meas':..., 'I_meas':...} из ядра (с шумом).
-               Если None — используются ideal_readings().
+    readings — словарь {'U_meas':..., 'I_meas':...} с показаниями приборов
+               ядра (с шумом или без). Схема сама их не считает: если
+               readings не передан, на «дисплеях» прочерк.
     equivalent — заменить приборы их внутренними сопротивлениями.
+    load_label — подпись нагрузки вместо «R = …» (для дополнительных схем:
+                 два резистора, лампа).
+
+    Возвращает показания (readings + R_meas) или пустой словарь.
     """
     ax.clear()
-    ideal = ideal_readings(U_src, R, scheme, R_A, R_V)
-    rd = dict(ideal)
-    if readings:
-        rd.update(readings)
-        rd["R_meas"] = rd["U_meas"] / rd["I_meas"]
+    rd = _with_r_meas(readings) if readings else {}
 
     Y_TOP, Y_BOT, Y_V = 4.0, 0.0, 6.2
     X_L, X_R = 0.0, 10.0
@@ -238,7 +246,7 @@ def draw_circuit(ax, scheme="A", U_src=10.0, R=100.0, R_A=0.5, R_V=1e6,
     # ---- резистор R
     x_r1 = x_vnode if scheme == "A" else 4.6
     resistor_h(ax, x_r1, 8.0, Y_TOP, label_above=False,
-               label=f"R = {fmt(R, 'Ом', 3)}")
+               label=load_label or f"R = {fmt(R, 'Ом', 3)}")
 
     # ---- амперметр (или R_A)
     if equivalent:
@@ -252,7 +260,8 @@ def draw_circuit(ax, scheme="A", U_src=10.0, R=100.0, R_A=0.5, R_V=1e6,
             ax.text(x_amm, Y_TOP - 0.62, f"$R_A$={fmt(R_A, 'Ом', 2)}",
                     ha="center", va="top", fontsize=8.5, color="#555")
     if show_readings:
-        readout(ax, x_amm, Y_TOP + 0.95, "I = " + fmt(rd["I_meas"], "А"))
+        readout(ax, x_amm, Y_TOP + 0.95,
+                "I = " + (_reading_text(rd["I_meas"], "А") if rd else "—"))
 
     # ---- ветвь вольтметра (или R_V)
     x_vm = (x_vnode + 8.0) / 2
@@ -270,7 +279,8 @@ def draw_circuit(ax, scheme="A", U_src=10.0, R=100.0, R_A=0.5, R_V=1e6,
             ax.text(x_vm, Y_V - 0.62, f"$R_V$={fmt(R_V, 'Ом', 2)}",
                     ha="center", va="top", fontsize=8.5, color=VBRANCH)
     if show_readings:
-        readout(ax, x_vm, Y_V + 0.95, "U = " + fmt(rd["U_meas"], "В"),
+        readout(ax, x_vm, Y_V + 0.95,
+                "U = " + (_reading_text(rd["U_meas"], "В") if rd else "—"),
                 color=VBRANCH)
 
     # ---- стрелки токов
@@ -307,10 +317,11 @@ def draw_circuit(ax, scheme="A", U_src=10.0, R=100.0, R_A=0.5, R_V=1e6,
         else:
             f1 = r"$U_{\rm изм} = U_R + U_A$"
             f2 = r"$R_{\rm изм} = R + R_A > R$"
-        delta = (rd["R_meas"] - R) / R * 100
-        txt = (f1 + "        " + f2 + "\n"
-               + r"$R_{\rm изм} = U/I$ = " + fmt(rd["R_meas"], "Ом", 5)
-               + f"    ошибка метода δ = {delta:+.3f} %".replace(".", ","))
+        txt = f1 + "        " + f2
+        if rd.get("R_meas") is not None:      # число — только из показаний ядра
+            delta = (rd["R_meas"] - R) / R * 100
+            txt += ("\n" + r"$R_{\rm изм} = U/I$ = " + fmt(rd["R_meas"], "Ом", 5)
+                    + f"    отклонение δ = {delta:+.3f} %".replace(".", ","))
         ax.text(5.0, -0.95, txt, ha="center", va="top", fontsize=11,
                 linespacing=1.9,
                 bbox=dict(boxstyle="round,pad=0.5", fc="#f4f6f8",
