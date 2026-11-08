@@ -81,6 +81,8 @@ def fmt(value, unit, digits=4):
     Для «Ом» дольные приставки не используются: 0,5 Ом, а не 500 мОм."""
     if value == 0:
         return f"0 {unit}"
+    if value in (float("inf"), float("-inf")):      # идеальный вольтметр R_V = ∞
+        return f"∞ {unit}"
     for factor, prefix in _PREFIXES:
         if abs(value) >= factor or (unit == "Ом" and factor == 1):
             break
